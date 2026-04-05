@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-VERSION: "2026-03-30-PNG-PROD-r248C",
+VERSION: "r254C3iC",
 CHANGELOG_LAST: "r244D: align main portal working sheet to PROD and sync runtime identity",
-DEPLOY_VERSION_NUMBER: 61,
+DEPLOY_VERSION_NUMBER: 82,
 BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
 
   // STAGING/PROD data mode routing (working sheet)
@@ -182,7 +182,7 @@ BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
   // Exam sites
   EXAM_SITES_SHEET: "Exam_Sites",
 
-  // Subjects shown (portal checkbox list) — Agriculture removed
+  // Subjects shown (portal checkbox list) â€” Agriculture removed
   PORTAL_SUBJECTS: [
     "English","Mathematics","Biology","Chemistry","Physics","History","Geography",
     "Economics","ICT","Business Studies","Personal Development","Science","Social Science",
