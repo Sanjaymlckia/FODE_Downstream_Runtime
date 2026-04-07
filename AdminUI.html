@@ -1612,8 +1612,9 @@ function renderStageBatchSummary_(res){
     parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Sendable: ' + esc(res.sendable ? "YES" : "NO") + '</div>');
     parts.push('<div style="margin-top:6px;">Total in Stage: ' + esc(String(Number(res.totalInStage || 0))) + ' | Eligible Unsent Found: ' + esc(String(Number(res.eligibleUnsentFound || 0))) + ' | Preview Limit: ' + esc(String(Number(res.previewLimit || 0))) + '</div>');
     parts.push('<div style="margin-top:6px;">Prepared for Send: ' + esc(String(Number(res.eligible || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + ' | Already SENT Excluded: ' + esc(String(Number(res.alreadySentExcluded || 0))) + ' | Failed Excluded: ' + esc(String(Number(res.failedExcluded || 0))) + '</div>');
-    parts.push('<div style="margin-top:6px;">Selection Mode: next eligible unsent records' + (res.offsetIgnored ? ' | Diagnostic Offset Ignored: YES' : ' | Diagnostic Offset Ignored: NO') + '</div>');
-    if (res.sendDisabledReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.sendDisabledReason || "")) + '</div>');
+    parts.push('<div style="margin-top:6px;">Selection Mode: next eligible unsent records' + (res.offsetIgnored ? ' | Diagnostic Offset Ignored: YES' : ' | Diagnostic Offset Ignored: NO') + ' | Elapsed: ' + esc(String(Number(res.elapsedMs || 0))) + ' ms</div>');
+    if (!Number(res.eligible || 0) && res.emptyReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.emptyReason || "")) + '</div>');
+    else if (res.sendDisabledReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.sendDisabledReason || "")) + '</div>');
     if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
     if (Array.isArray(res.eligibleApplicantIdsSample) && res.eligibleApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Eligible Sample: ' + esc(res.eligibleApplicantIdsSample.join(", ")) + '</div>');
     if (Array.isArray(res.blockedApplicantIdsSample) && res.blockedApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Blocked Sample: ' + esc(res.blockedApplicantIdsSample.join(", ")) + '</div>');
@@ -1631,6 +1632,7 @@ function renderStageBatchSummary_(res){
   box.classList.toggle("err", !!(res && res.ok === false));
   box.innerHTML = parts.join("");
 }
+
 function renderBatchPanel(){
   var selectedStage = batchState.selectedStage;
   var priority = batchState.priority;

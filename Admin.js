@@ -3066,6 +3066,28 @@ function stageBatchLogSummary_(eventName, payload) {
   } catch (_logErr) {}
 }
 
+function stageBatchEmptyReason_(cohort) {
+  var info = cohort && typeof cohort === "object" ? cohort : {};
+  var totalInStage = Number(info.totalInStage || 0);
+  var eligibleUnsentTotal = Number(info.eligibleUnsentTotal || 0);
+  var alreadySentExcluded = Number(info.alreadySentExcluded || 0);
+  var failedExcluded = Number(info.failedExcluded || 0);
+  var blockedTotal = Number(info.blockedTotal || 0);
+  var blockedByReason = info.blockedByReason || {};
+  if (eligibleUnsentTotal > 0) return "";
+  if (!clean_(info.messageType || "")) return "No batch message is supported for this stage.";
+  if (totalInStage <= 0) return "No applicants are currently in this stage.";
+  if (alreadySentExcluded >= totalInStage) return "No eligible unsent invite candidates found. All rows in this stage are already marked SENT.";
+  if (alreadySentExcluded + failedExcluded >= totalInStage && blockedTotal <= 0) {
+    return "No eligible unsent invite candidates found. Remaining rows are already sent or excluded from automatic retry.";
+  }
+  var topReason = Object.keys(blockedByReason).sort(function(a, b) {
+    return Number(blockedByReason[b] || 0) - Number(blockedByReason[a] || 0);
+  })[0] || "";
+  if (topReason) return "No eligible unsent invite candidates found under current rules. Primary block: " + topReason + ".";
+  return "No eligible unsent invite candidates found under current rules.";
+}
+
 function collectStageBatchCohort_(stage, limit, offset, opts) {
   var normalizedStage = normalizeStageBatchStage_(stage);
   var batchLimit = clampStageBatchLimit_(limit);
@@ -3087,9 +3109,11 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
   var blockedByReason = {};
   var blockedApplicantIdsSample = [];
   var candidates = [];
+  var startedAtMs = new Date().getTime();
   if (!headers.length || values.length < 2 || !normalizedStage) {
-    return {
+    var emptyCohort = {
       stage: normalizedStage,
+      messageType: messageType,
       limit: batchLimit,
       requestedOffset: requestedOffset,
       offset: 0,
@@ -3103,8 +3127,11 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
       blockedTotal: 0,
       blockedByReason: {},
       blockedApplicantIdsSample: [],
-      candidates: []
+      candidates: [],
+      elapsedMs: new Date().getTime() - startedAtMs
     };
+    emptyCohort.emptyReason = stageBatchEmptyReason_(emptyCohort);
+    return emptyCohort;
   }
   for (var r = 1; r < values.length; r++) {
     var row = values[r] || [];
@@ -3127,11 +3154,12 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
       failedExcluded++;
       continue;
     }
-    var resolved = resolveApplicantMessageContext_(applicantId, messageType, {
+    var resolved = resolveApplicantMessageContextFromRow_(rowObj, r + 1, sh, messageType, {
       action: "stageBatchCollect",
       actorEmail: actorEmail,
       actorRole: actorRole,
-      debugId: debugId
+      debugId: debugId,
+      applicantId: applicantId
     });
     if (resolved && resolved.eligible) {
       eligibleUnsentTotal++;
@@ -3148,8 +3176,9 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
     incrementStageBatchReason_(blockedByReason, resolved && (resolved.blockCode || resolved.code || "BLOCKED"));
     pushStageBatchSample_(blockedApplicantIdsSample, applicantId);
   }
-  return {
+  var cohort = {
     stage: normalizedStage,
+    messageType: messageType,
     limit: batchLimit,
     requestedOffset: requestedOffset,
     offset: 0,
@@ -3163,12 +3192,16 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
     blockedTotal: blockedTotal,
     blockedByReason: blockedByReason,
     blockedApplicantIdsSample: blockedApplicantIdsSample,
-    candidates: candidates
+    candidates: candidates,
+    elapsedMs: new Date().getTime() - startedAtMs
   };
+  cohort.emptyReason = stageBatchEmptyReason_(cohort);
+  return cohort;
 }
 
 function admin_previewStageBatch(payload) {
   return withEnvelope_("admin_previewStageBatch", function (dbgId) {
+    var startedAtMs = new Date().getTime();
     var adminEmail = getActiveUserEmail_();
     if (!isAdmin_(adminEmail)) throw new Error("Access denied");
     requireSuperAdmin_(adminEmail);
@@ -3177,6 +3210,13 @@ function admin_previewStageBatch(payload) {
     var stage = normalizeStageBatchStage_(p.stage || "");
     var limit = clampStageBatchLimit_(p.limit);
     var requestedOffset = clampStageBatchOffset_(p.offset);
+    stageBatchLogSummary_("STAGE_BATCH_PREVIEW_REQUEST", {
+      debugId: dbgId,
+      stage: stage,
+      messageType: getBatchMessageTypeForStage_(stage),
+      batchSizeRequested: limit,
+      requestedOffset: requestedOffset
+    });
     if (!stage) {
       return adminCommBlockedResult_("preview_stage_batch", "UNSUPPORTED_STAGE", dbgId, {
         blockReason: "Unsupported stage for batch preview.",
@@ -3193,6 +3233,7 @@ function admin_previewStageBatch(payload) {
       actorRole: actor.actorRole,
       debugId: dbgId
     });
+    var emptyReason = clean_(cohort.emptyReason || "");
     var out = {
       ok: true,
       stage: stage,
@@ -3214,16 +3255,16 @@ function admin_previewStageBatch(payload) {
       failedExcluded: Number(cohort.failedExcluded || 0),
       blockedByReason: cohort.blockedByReason || {},
       eligibleApplicantIdsSample: [],
-      blockedApplicantIdsSample: Array.isArray(cohort.blockedApplicantIdsSample) ? cohort.blockedApplicantIdsSample.slice(0, 10) : []
+      blockedApplicantIdsSample: Array.isArray(cohort.blockedApplicantIdsSample) ? cohort.blockedApplicantIdsSample.slice(0, 10) : [],
+      emptyReason: emptyReason,
+      elapsedMs: Number(cohort.elapsedMs || 0)
     };
     (cohort.candidates || []).forEach(function (candidate) {
       pushStageBatchSample_(out.eligibleApplicantIdsSample, candidate.applicantId);
     });
-    if (!sendable) {
+    if (!sendable || out.eligible <= 0) {
       clearStageBatchPreviewCache_(adminEmail);
-      return out;
-    }
-    if (out.eligible > 0) {
+    } else {
       writeStageBatchPreviewCache_(adminEmail, {
         stage: stage,
         limit: Number(out.previewLimit || limit),
@@ -3232,22 +3273,24 @@ function admin_previewStageBatch(payload) {
         eligibleUnsentFound: Number(out.eligibleUnsentFound || 0),
         debugId: dbgId
       });
-    } else {
-      clearStageBatchPreviewCache_(adminEmail);
     }
+    var elapsedMs = Math.max(Number(out.elapsedMs || 0), new Date().getTime() - startedAtMs);
+    out.elapsedMs = elapsedMs;
     stageBatchLogSummary_("STAGE_BATCH_PREVIEW_SUMMARY", {
       debugId: dbgId,
       stage: stage,
+      messageType: messageType,
       batchSizeRequested: limit,
       requestedOffset: requestedOffset,
       offsetIgnored: out.offsetIgnored === true,
-      totalInStage: out.totalInStage,
-      eligibleUnsentRowsFound: out.eligibleUnsentFound,
-      rowsPreparedForSend: out.eligible,
+      eligibleUnsentCandidateCount: out.eligibleUnsentFound,
+      finalPreviewResultCount: out.eligible,
       alreadySentExcluded: out.alreadySentExcluded,
       blockedExcluded: out.blocked,
       failedExcluded: out.failedExcluded,
-      blockedByReason: out.blockedByReason
+      blockedByReason: out.blockedByReason,
+      zeroResultReason: out.eligible > 0 ? "" : out.emptyReason,
+      elapsedMs: elapsedMs
     });
     return out;
   });
