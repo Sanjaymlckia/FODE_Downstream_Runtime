@@ -5871,6 +5871,34 @@ function getLastCommunicationSentAt_(applicantId, messageType) {
   }
 }
 
+function buildCommunicationCooldownPreviewLookup_(messageType) {
+  var normalizedType = normalizeApplicantMessageType_(messageType);
+  var prefix = "COMM_LAST::" + clean_(normalizedType || "") + "::";
+  var byApplicantId = {};
+  if (!normalizedType) return { ok: true, messageType: "", byApplicantId: byApplicantId };
+  try {
+    var props = PropertiesService.getScriptProperties().getProperties() || {};
+    Object.keys(props).forEach(function (key) {
+      var normalizedKey = clean_(key || "");
+      if (normalizedKey.indexOf(prefix) !== 0) return;
+      var applicantId = clean_(normalizedKey.slice(prefix.length));
+      if (!applicantId) return;
+      byApplicantId[applicantId] = clean_(props[key] || "");
+    });
+    return {
+      ok: true,
+      messageType: normalizedType,
+      byApplicantId: byApplicantId
+    };
+  } catch (_err) {
+    return {
+      ok: false,
+      messageType: normalizedType,
+      byApplicantId: {}
+    };
+  }
+}
+
 function setLastCommunicationSentAt_(applicantId, messageType, isoValue) {
   try {
     PropertiesService.getScriptProperties().setProperty(communicationCooldownKey_(applicantId, messageType), clean_(isoValue || ""));
@@ -6075,7 +6103,9 @@ function previewRpcTerminalSummary_(payload) {
       payloadAssemblyMs: Number(phase.payloadAssemblyMs || 0)
     }
   };
-  campaignLog_("STAGE_BATCH_PREVIEW_RPC_RETURN", summary);
+  try {
+    Logger.log("STAGE_BATCH_PREVIEW_RPC_RETURN " + JSON.stringify(summary));
+  } catch (_logErr) {}
   return data;
 }
 
@@ -6088,6 +6118,7 @@ function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messag
   var row = rowObj || {};
   var previewMetrics = options.previewMetrics && typeof options.previewMetrics === "object" ? options.previewMetrics : null;
   var portalSecretLookup = options.portalSecretLookup && typeof options.portalSecretLookup === "object" ? options.portalSecretLookup : null;
+  var cooldownLookup = options.cooldownLookup && typeof options.cooldownLookup === "object" ? options.cooldownLookup : null;
   var resolutionStartedAtMs = new Date().getTime();
   var context = {
     ok: true,
@@ -6147,7 +6178,12 @@ function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messag
   if (isCampaignBounceFlagTrue_(row.Email_Bounce_Flag)) return block("BOUNCED", clean_(row.Email_Bounce_Reason || "") || communicationBlockReason_("BOUNCED", normalizedType));
   if (context.emailStatus === "DO_NOT_CONTACT") return block("DO_NOT_CONTACT");
 
-  var lastSentAt = getLastCommunicationSentAt_(context.applicantId, normalizedType);
+  var lastSentAt = "";
+  if (cooldownLookup && cooldownLookup.byApplicantId) {
+    lastSentAt = clean_(cooldownLookup.byApplicantId[context.applicantId] || "");
+  } else {
+    lastSentAt = getLastCommunicationSentAt_(context.applicantId, normalizedType);
+  }
   if (lastSentAt) {
     var cooldownRemaining = parseTime_(lastSentAt) + communicationCooldownMs_();
     if (cooldownRemaining > new Date().getTime()) return block("COOLDOWN_ACTIVE");

@@ -3201,6 +3201,11 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
   var candidates = [];
   var startedAtMs = new Date().getTime();
   var portalSecretLookup = options.portalSecretLookup && typeof options.portalSecretLookup === "object" ? options.portalSecretLookup : null;
+  var cooldownLookup = options.cooldownLookup && typeof options.cooldownLookup === "object" ? options.cooldownLookup : null;
+  var previewEarlyStop = options.previewEarlyStop === true;
+  var previewEligibleBuffer = Math.max(0, Math.min(10, Math.floor(Number(options.previewEligibleBuffer || 2))));
+  var previewEligibleTarget = previewEarlyStop ? Math.max(batchLimit, batchLimit + previewEligibleBuffer) : 0;
+  var eligibleCountBounded = false;
   if (!headers.length || values.length < 2 || !normalizedStage) {
     var emptyCohort = {
       stage: normalizedStage,
@@ -3267,6 +3272,7 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
       requestId: requestId,
       previewMetrics: phaseTimings,
       portalSecretLookup: portalSecretLookup,
+      cooldownLookup: cooldownLookup,
       skipPortalUrlBuild: !!portalSecretLookup
     });
     if (resolved && resolved.eligible) {
@@ -3277,6 +3283,10 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
           rowNumber: Number(resolved.rowNumber || (r + 1) || 0),
           effectiveEmail: clean_(resolved.effectiveEmail || "")
         });
+      }
+      if (previewEligibleTarget > 0 && eligibleUnsentTotal >= previewEligibleTarget) {
+        eligibleCountBounded = true;
+        break;
       }
       continue;
     }
@@ -3302,6 +3312,7 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
     blockedByReason: blockedByReason,
     blockedApplicantIdsSample: blockedApplicantIdsSample,
     candidates: candidates,
+    eligibleCountBounded: eligibleCountBounded,
     elapsedMs: new Date().getTime() - startedAtMs,
     phaseTimings: phaseTimings
   };
@@ -3324,14 +3335,6 @@ function admin_previewStageBatch(payload) {
       resolutionMs: 0,
       payloadAssemblyMs: 0
     };
-    stageBatchLogSummary_("STAGE_BATCH_PREVIEW_START", {
-      requestId: requestId,
-      debugId: dbgId,
-      stage: stage,
-      messageType: messageType,
-      batchSizeRequested: limit,
-      requestedOffset: requestedOffset
-    });
     try {
       var adminEmail = getActiveUserEmail_();
       if (!isAdmin_(adminEmail)) throw new Error("Access denied");
@@ -3342,14 +3345,6 @@ function admin_previewStageBatch(payload) {
       limit = clampStageBatchLimit_(p.limit);
       requestedOffset = clampStageBatchOffset_(p.offset);
       messageType = getBatchMessageTypeForStage_(stage);
-      stageBatchLogSummary_("STAGE_BATCH_PREVIEW_REQUEST", {
-        requestId: requestId,
-        debugId: dbgId,
-        stage: stage,
-        messageType: messageType,
-        batchSizeRequested: limit,
-        requestedOffset: requestedOffset
-      });
       if (!stage) {
         var invalidOut = stageBatchPreviewResponse_({
           ok: false,
@@ -3365,18 +3360,6 @@ function admin_previewStageBatch(payload) {
           elapsedMs: new Date().getTime() - startedAtMs,
           phaseTimings: phaseTimings
         });
-        stageBatchLogSummary_("STAGE_BATCH_PREVIEW_END", {
-          requestId: requestId,
-          debugId: dbgId,
-          stage: stage,
-          messageType: messageType,
-          batchSizeRequested: limit,
-          requestedOffset: requestedOffset,
-          outcome: "error",
-          elapsedMs: invalidOut.elapsedMs,
-          error: invalidOut.message,
-          phaseTimings: phaseTimings
-        });
         return typeof previewRpcTerminalSummary_ === "function" ? previewRpcTerminalSummary_(stageBatchPreviewFinalizeForRpc_(invalidOut)) : stageBatchPreviewFinalizeForRpc_(invalidOut);
       }
       var sendable = !!messageType;
@@ -3385,6 +3368,10 @@ function admin_previewStageBatch(payload) {
       if (sendable && typeof communicationRequiresPortalUrl_ === "function" && communicationRequiresPortalUrl_(messageType) && typeof buildPortalSecretPreviewLookup_ === "function") {
         previewPortalSecretLookup = buildPortalSecretPreviewLookup_();
       }
+      var previewCooldownLookup = null;
+      if (sendable && typeof buildCommunicationCooldownPreviewLookup_ === "function") {
+        previewCooldownLookup = buildCommunicationCooldownPreviewLookup_(messageType);
+      }
       var cohort = collectStageBatchCohort_(stage, limit, requestedOffset, {
         messageType: messageType,
         actorEmail: actor.actorEmail,
@@ -3392,7 +3379,10 @@ function admin_previewStageBatch(payload) {
         debugId: dbgId,
         requestId: requestId,
         phaseTimings: phaseTimings,
-        portalSecretLookup: previewPortalSecretLookup && previewPortalSecretLookup.ok ? previewPortalSecretLookup : null
+        portalSecretLookup: previewPortalSecretLookup && previewPortalSecretLookup.ok ? previewPortalSecretLookup : null,
+        cooldownLookup: previewCooldownLookup && previewCooldownLookup.ok ? previewCooldownLookup : null,
+        previewEarlyStop: true,
+        previewEligibleBuffer: 2
       });
       var assemblyStartedAtMs = new Date().getTime();
       var emptyReason = clean_(cohort.emptyReason || "");
@@ -3423,6 +3413,7 @@ function admin_previewStageBatch(payload) {
         eligibleApplicantIdsSample: [],
         blockedApplicantIdsSample: Array.isArray(cohort.blockedApplicantIdsSample) ? cohort.blockedApplicantIdsSample.slice(0, 10) : [],
         emptyReason: emptyReason,
+        eligibleCountBounded: cohort.eligibleCountBounded === true,
         elapsedMs: Number(cohort.elapsedMs || 0),
         phaseTimings: cohort.phaseTimings || phaseTimings
       });
@@ -3445,26 +3436,11 @@ function admin_previewStageBatch(payload) {
       }
       out.elapsedMs = Math.max(Number(out.elapsedMs || 0), new Date().getTime() - startedAtMs);
       out.phaseTimings = phaseTimings;
-      out.message = out.count > 0 ? "Preview ready." : (out.emptyReason || "No eligible unsent invite candidates found under current rules.");
-      stageBatchLogSummary_("STAGE_BATCH_PREVIEW_END", {
-        requestId: requestId,
-        debugId: dbgId,
-        stage: stage,
-        messageType: messageType,
-        batchSizeRequested: limit,
-        requestedOffset: requestedOffset,
-        offsetIgnored: out.offsetIgnored === true,
-        eligibleUnsentCandidateCount: out.eligibleUnsentFound,
-        finalPreviewResultCount: out.count,
-        alreadySentExcluded: out.alreadySentExcluded,
-        blockedExcluded: out.blocked,
-        failedExcluded: out.failedExcluded,
-        blockedByReason: out.blockedByReason,
-        zeroResultReason: out.count > 0 ? "" : out.emptyReason,
-        outcome: out.count > 0 ? "success" : "empty",
-        elapsedMs: out.elapsedMs,
-        phaseTimings: phaseTimings
-      });
+      out.message = out.count > 0
+        ? (cohort.eligibleCountBounded === true
+          ? "Preview ready. Eligible unsent count shown is bounded to the preview window, not a full-stage total."
+          : "Preview ready.")
+        : (out.emptyReason || "No eligible unsent invite candidates found under current rules.");
       return typeof previewRpcTerminalSummary_ === "function" ? previewRpcTerminalSummary_(stageBatchPreviewFinalizeForRpc_(out)) : stageBatchPreviewFinalizeForRpc_(out);
     } catch (e) {
       var errorOut = stageBatchPreviewResponse_({
@@ -3481,18 +3457,6 @@ function admin_previewStageBatch(payload) {
         elapsedMs: new Date().getTime() - startedAtMs,
         phaseTimings: phaseTimings,
         error: String(e && e.message ? e.message : e || "Preview failed.")
-      });
-      stageBatchLogSummary_("STAGE_BATCH_PREVIEW_END", {
-        requestId: requestId,
-        debugId: dbgId,
-        stage: stage,
-        messageType: messageType,
-        batchSizeRequested: limit,
-        requestedOffset: requestedOffset,
-        outcome: "error",
-        elapsedMs: errorOut.elapsedMs,
-        error: errorOut.message,
-        phaseTimings: phaseTimings
       });
       return typeof previewRpcTerminalSummary_ === "function" ? previewRpcTerminalSummary_(stageBatchPreviewFinalizeForRpc_(errorOut)) : stageBatchPreviewFinalizeForRpc_(errorOut);
     }
