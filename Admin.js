@@ -3200,6 +3200,7 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
   var blockedApplicantIdsSample = [];
   var candidates = [];
   var startedAtMs = new Date().getTime();
+  var portalSecretLookup = options.portalSecretLookup && typeof options.portalSecretLookup === "object" ? options.portalSecretLookup : null;
   if (!headers.length || values.length < 2 || !normalizedStage) {
     var emptyCohort = {
       stage: normalizedStage,
@@ -3264,7 +3265,9 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
       debugId: debugId,
       applicantId: applicantId,
       requestId: requestId,
-      previewMetrics: phaseTimings
+      previewMetrics: phaseTimings,
+      portalSecretLookup: portalSecretLookup,
+      skipPortalUrlBuild: !!portalSecretLookup
     });
     if (resolved && resolved.eligible) {
       eligibleUnsentTotal++;
@@ -3378,13 +3381,18 @@ function admin_previewStageBatch(payload) {
       }
       var sendable = !!messageType;
       var priority = mapStagePriority_(stage);
+      var previewPortalSecretLookup = null;
+      if (sendable && typeof communicationRequiresPortalUrl_ === "function" && communicationRequiresPortalUrl_(messageType) && typeof buildPortalSecretPreviewLookup_ === "function") {
+        previewPortalSecretLookup = buildPortalSecretPreviewLookup_();
+      }
       var cohort = collectStageBatchCohort_(stage, limit, requestedOffset, {
         messageType: messageType,
         actorEmail: actor.actorEmail,
         actorRole: actor.actorRole,
         debugId: dbgId,
         requestId: requestId,
-        phaseTimings: phaseTimings
+        phaseTimings: phaseTimings,
+        portalSecretLookup: previewPortalSecretLookup && previewPortalSecretLookup.ok ? previewPortalSecretLookup : null
       });
       var assemblyStartedAtMs = new Date().getTime();
       var emptyReason = clean_(cohort.emptyReason || "");

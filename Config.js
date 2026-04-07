@@ -7,10 +7,10 @@
  */
 var CONFIG = {
   // Versioning (change control)
-VERSION: "r088",
-CHANGELOG_LAST: "r088: preview rpc return-path isolation",
-DEPLOY_VERSION_NUMBER: 88,
-BUILD_LABEL: "r088 preview rpc return-path isolation",
+VERSION: "r089",
+CHANGELOG_LAST: "r089: preview secret lookup preload",
+DEPLOY_VERSION_NUMBER: 89,
+BUILD_LABEL: "r089 preview secret lookup preload",
 
   // STAGING/PROD data mode routing (working sheet)
   DATA_MODE: "PROD", // "STAGING" | "PROD"

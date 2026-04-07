@@ -6027,6 +6027,37 @@ function previewRpcPayloadSize_(payload) {
   }
 }
 
+function buildPortalSecretPreviewLookup_() {
+  try {
+    var secretsSheet = openPortalSecrets_();
+    var idx = getHeaderIndexMap_(secretsSheet);
+    if (!idx.ApplicantID) throw new Error("PortalSecrets missing header: ApplicantID");
+    var data = withSpreadsheetRetry_(function () {
+      return secretsSheet.getDataRange().getValues();
+    });
+    var byApplicantId = {};
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r] || [];
+      var applicantId = clean_(row[idx.ApplicantID - 1]);
+      if (!applicantId || byApplicantId[applicantId]) continue;
+      byApplicantId[applicantId] = {
+        rowIndex: r + 1,
+        status: clean_(idx.Status ? row[idx.Status - 1] : ""),
+        secretPlain: clean_(idx.Secret_Plain ? row[idx.Secret_Plain - 1] : ""),
+        secretHash: clean_(idx.Secret_Hash ? row[idx.Secret_Hash - 1] : "")
+      };
+    }
+    return { ok: true, byApplicantId: byApplicantId };
+  } catch (e) {
+    return {
+      ok: false,
+      code: "SECRET_LOOKUP_FAILED",
+      error: safeStr_(stringifyGsError_(e) || "Secret lookup failed"),
+      byApplicantId: {}
+    };
+  }
+}
+
 function previewRpcTerminalSummary_(payload) {
   var data = payload && typeof payload === "object" ? payload : {};
   var phase = data.phaseTimings && typeof data.phaseTimings === "object" ? data.phaseTimings : {};
@@ -6056,6 +6087,7 @@ function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messag
   var actor = communicationGetActorInfo_(options);
   var row = rowObj || {};
   var previewMetrics = options.previewMetrics && typeof options.previewMetrics === "object" ? options.previewMetrics : null;
+  var portalSecretLookup = options.portalSecretLookup && typeof options.portalSecretLookup === "object" ? options.portalSecretLookup : null;
   var resolutionStartedAtMs = new Date().getTime();
   var context = {
     ok: true,
@@ -6122,9 +6154,26 @@ function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messag
   }
 
   if (context.requiresPortalUrl) {
-    var secretRes = getActivePortalSecretForCampaign_(context.applicantId);
-    if (!secretRes.ok) return block("MISSING_PORTAL_SECRET");
-    context.portalUrl = buildLegacyCampaignPortalUrl_(context.applicantId, secretRes.secretPlain);
+    var secretRes = null;
+    if (portalSecretLookup && portalSecretLookup.byApplicantId) {
+      var cachedSecret = portalSecretLookup.byApplicantId[context.applicantId] || null;
+      if (!cachedSecret) return block("MISSING_PORTAL_SECRET");
+      var cachedStatus = clean_(cachedSecret.status || "");
+      if (cachedStatus !== "Active") return block("INACTIVE_SECRET");
+      if (!clean_(cachedSecret.secretPlain || "") || !clean_(cachedSecret.secretHash || "")) return block("UNUSABLE_SECRET");
+      secretRes = {
+        ok: true,
+        applicantId: context.applicantId,
+        rowIndex: Number(cachedSecret.rowIndex || 0),
+        status: cachedStatus,
+        secretPlain: clean_(cachedSecret.secretPlain || ""),
+        secretHash: clean_(cachedSecret.secretHash || "")
+      };
+    } else {
+      secretRes = getActivePortalSecretForCampaign_(context.applicantId);
+      if (!secretRes.ok) return block("MISSING_PORTAL_SECRET");
+    }
+    if (!options.skipPortalUrlBuild) context.portalUrl = buildLegacyCampaignPortalUrl_(context.applicantId, secretRes.secretPlain);
   }
 
   if ((normalizedType === "legacy_invite" || normalizedType === "reminder") && context.portalSubmittedActive) {
