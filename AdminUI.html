@@ -1724,15 +1724,52 @@ function previewStageBatchUi_(){
   var requestSeq = batchState.previewRequestSeq;
   var clientRequestId = "preview-client-" + String(Date.now()) + "-" + String(requestSeq);
   var requestStartedAtMs = Date.now();
+  var timeoutMs = 20000;
+  console.log("[StageBatchPreview] start", { requestId: clientRequestId, stage: stage, limit: limit, offset: offset, timeoutMs: timeoutMs });
   resetBatchPreviewState_(false);
   batchState.previewActiveSeq = requestSeq;
   batchState.previewClientRequestId = clientRequestId;
   batchState.busy = true;
   batchState.action = "preview";
   renderBatchPanel();
+  var timeoutHandle = window.setTimeout(function(){
+    if (batchState.previewActiveSeq !== requestSeq) {
+      console.log("[StageBatchPreview] stale_ignored", { requestId: clientRequestId, source: "timeout" });
+      return;
+    }
+    batchState.previewActiveSeq = 0;
+    batchState.busy = false;
+    var clientElapsedMs = Date.now() - requestStartedAtMs;
+    batchState.previewClientElapsedMs = clientElapsedMs;
+    resetBatchPreviewState_(false);
+    batchState.action = "preview";
+    batchState.result = {
+      ok: false,
+      action: "preview_stage_batch",
+      message: "Preview timed out.",
+      error: "Preview timed out.",
+      emptyReason: "",
+      elapsedMs: 0,
+      clientElapsedMs: clientElapsedMs,
+      requestId: clientRequestId,
+      stage: stage,
+      messageType: batchState.messageType || "",
+      count: 0,
+      previewLimit: limit,
+      requestedOffset: offset,
+      offsetIgnored: offset > 0
+    };
+    console.log("[StageBatchPreview] terminal", { requestId: clientRequestId, path: "error", reason: "timeout", clientElapsedMs: clientElapsedMs });
+    renderBatchPanel();
+  }, timeoutMs);
   google.script.run
     .withSuccessHandler(function(res){
-      if (batchState.previewActiveSeq !== requestSeq) return;
+      console.log("[StageBatchPreview] success_callback", { requestId: clientRequestId });
+      window.clearTimeout(timeoutHandle);
+      if (batchState.previewActiveSeq !== requestSeq) {
+        console.log("[StageBatchPreview] stale_ignored", { requestId: clientRequestId, source: "success_callback" });
+        return;
+      }
       batchState.previewActiveSeq = 0;
       batchState.busy = false;
       batchState.previewClientElapsedMs = Date.now() - requestStartedAtMs;
@@ -1740,6 +1777,7 @@ function previewStageBatchUi_(){
       response.clientElapsedMs = batchState.previewClientElapsedMs;
       if (!response.requestId) response.requestId = clientRequestId;
       batchState.result = response;
+      var terminalPath = response.ok === false ? "error" : (Number(response.count || 0) > 0 ? "success" : "empty");
       if (response.ok === true && String(response.stage || "").toUpperCase() === stage && Number(response.previewLimit || 0) === limit && Number(response.count || 0) > 0) {
         batchState.previewReady = true;
         batchState.previewStage = stage;
@@ -1749,10 +1787,16 @@ function previewStageBatchUi_(){
         resetBatchPreviewState_(true);
         batchState.result = response;
       }
+      console.log("[StageBatchPreview] terminal", { requestId: String(response.requestId || clientRequestId), path: terminalPath, count: Number(response.count || 0), clientElapsedMs: Number(response.clientElapsedMs || 0), serverElapsedMs: Number(response.elapsedMs || 0) });
       renderBatchPanel();
     })
     .withFailureHandler(function(err){
-      if (batchState.previewActiveSeq !== requestSeq) return;
+      console.log("[StageBatchPreview] failure_callback", { requestId: clientRequestId, error: String((err && err.message) || err || "Preview request failed.") });
+      window.clearTimeout(timeoutHandle);
+      if (batchState.previewActiveSeq !== requestSeq) {
+        console.log("[StageBatchPreview] stale_ignored", { requestId: clientRequestId, source: "failure_callback" });
+        return;
+      }
       batchState.previewActiveSeq = 0;
       batchState.busy = false;
       var clientElapsedMs = Date.now() - requestStartedAtMs;
@@ -1775,6 +1819,7 @@ function previewStageBatchUi_(){
         requestedOffset: offset,
         offsetIgnored: offset > 0
       };
+      console.log("[StageBatchPreview] terminal", { requestId: clientRequestId, path: "error", reason: "failure_callback", clientElapsedMs: clientElapsedMs });
       renderBatchPanel();
     })
     .admin_previewStageBatch({ stage: stage, limit: limit, offset: offset });

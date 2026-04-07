@@ -3086,6 +3086,7 @@ function stageBatchPreviewResponse_(data) {
     else if (ok) message = "Preview ready.";
     else message = clean_(src.blockReason || src.error || "Preview failed.");
   }
+  var phaseSrc = src.phaseTimings && typeof src.phaseTimings === "object" ? src.phaseTimings : {};
   return {
     ok: ok,
     action: "preview_stage_batch",
@@ -3120,8 +3121,32 @@ function stageBatchPreviewResponse_(data) {
     blockCode: clean_(src.blockCode || src.code || ""),
     blockReason: clean_(src.blockReason || src.error || ""),
     error: clean_(src.error || (!ok ? message : "")),
-    phaseTimings: src.phaseTimings || {}
+    phaseTimings: {
+      candidateSelectionMs: Number(phaseSrc.candidateSelectionMs || 0),
+      eligibilityFilteringMs: Number(phaseSrc.eligibilityFilteringMs || 0),
+      rowHydrationMs: Number(phaseSrc.rowHydrationMs || 0),
+      resolutionMs: Number(phaseSrc.resolutionMs || 0),
+      payloadAssemblyMs: Number(phaseSrc.payloadAssemblyMs || 0)
+    }
   };
+}
+
+function stageBatchPreviewFinalizeForRpc_(data) {
+  var base = stageBatchPreviewResponse_(data);
+  try {
+    return JSON.parse(JSON.stringify(base));
+  } catch (_err) {
+    return stageBatchPreviewResponse_({
+      ok: false,
+      message: "Preview response serialization failed.",
+      requestId: clean_(base.requestId || base.debugId || adminDebugId_()),
+      debugId: clean_(base.debugId || base.requestId || adminDebugId_()),
+      stage: clean_(base.stage || ""),
+      messageType: clean_(base.messageType || ""),
+      count: 0,
+      elapsedMs: Number(base.elapsedMs || 0)
+    });
+  }
 }
 
 function stageBatchEmptyReason_(cohort) {
@@ -3349,7 +3374,7 @@ function admin_previewStageBatch(payload) {
           error: invalidOut.message,
           phaseTimings: phaseTimings
         });
-        return invalidOut;
+        return typeof previewRpcTerminalSummary_ === "function" ? previewRpcTerminalSummary_(stageBatchPreviewFinalizeForRpc_(invalidOut)) : stageBatchPreviewFinalizeForRpc_(invalidOut);
       }
       var sendable = !!messageType;
       var priority = mapStagePriority_(stage);
@@ -3432,7 +3457,7 @@ function admin_previewStageBatch(payload) {
         elapsedMs: out.elapsedMs,
         phaseTimings: phaseTimings
       });
-      return out;
+      return typeof previewRpcTerminalSummary_ === "function" ? previewRpcTerminalSummary_(stageBatchPreviewFinalizeForRpc_(out)) : stageBatchPreviewFinalizeForRpc_(out);
     } catch (e) {
       var errorOut = stageBatchPreviewResponse_({
         ok: false,
@@ -3461,7 +3486,7 @@ function admin_previewStageBatch(payload) {
         error: errorOut.message,
         phaseTimings: phaseTimings
       });
-      return errorOut;
+      return typeof previewRpcTerminalSummary_ === "function" ? previewRpcTerminalSummary_(stageBatchPreviewFinalizeForRpc_(errorOut)) : stageBatchPreviewFinalizeForRpc_(errorOut);
     }
   });
 }

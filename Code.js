@@ -6019,6 +6019,35 @@ function buildPaymentFollowupEmailBody_(context) {
   ].join("\n");
 }
 
+function previewRpcPayloadSize_(payload) {
+  try {
+    return Utilities.newBlob(JSON.stringify(payload || {}), "application/json").getBytes().length;
+  } catch (_err) {
+    return -1;
+  }
+}
+
+function previewRpcTerminalSummary_(payload) {
+  var data = payload && typeof payload === "object" ? payload : {};
+  var phase = data.phaseTimings && typeof data.phaseTimings === "object" ? data.phaseTimings : {};
+  var summary = {
+    requestId: clean_(data.requestId || data.debugId || ""),
+    outcome: clean_(data.result || (data.ok === false ? "ERROR" : "EMPTY") || ""),
+    count: Number(data.count || 0),
+    candidateCount: Number(data.eligibleUnsentFound || 0),
+    payloadBytes: Number(previewRpcPayloadSize_(data) || 0),
+    phaseTimings: {
+      candidateSelectionMs: Number(phase.candidateSelectionMs || 0),
+      eligibilityFilteringMs: Number(phase.eligibilityFilteringMs || 0),
+      rowHydrationMs: Number(phase.rowHydrationMs || 0),
+      resolutionMs: Number(phase.resolutionMs || 0),
+      payloadAssemblyMs: Number(phase.payloadAssemblyMs || 0)
+    }
+  };
+  campaignLog_("STAGE_BATCH_PREVIEW_RPC_RETURN", summary);
+  return data;
+}
+
 function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messageType, opts) {
   var options = opts && typeof opts === "object" ? opts : {};
   var debugId = clean_(options.debugId || newDebugId_());
