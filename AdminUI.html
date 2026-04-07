@@ -749,6 +749,10 @@
       previewLimit: null,
       previewOffset: null,
       previewEligible: 0,
+      previewRequestSeq: 0,
+      previewActiveSeq: 0,
+      previewClientRequestId: "",
+      previewClientElapsedMs: 0,
       disabledReason: "",
       busy: false,
       action: "",
@@ -1550,6 +1554,8 @@ function resetBatchPreviewState_(preserveResult){
   batchState.previewLimit = null;
   batchState.previewOffset = null;
   batchState.previewEligible = 0;
+  batchState.previewClientElapsedMs = 0;
+  batchState.previewClientRequestId = "";
   if (!preserveResult) batchState.result = null;
 }
 function clearBatchSelection_(preserveResult){
@@ -1602,22 +1608,24 @@ function renderStageBatchSummary_(res){
   var blockedList = Object.keys(blockedMap).sort().map(function(key){
     return '<span>' + esc(key) + ': ' + esc(String(Number(blockedMap[key] || 0))) + '</span>';
   }).join(' | ');
-  if (res.ok === false) {
-    parts.push('<div style="font-weight:800;">Batch Action Failed</div>');
-    if (res.blockCode || res.code) parts.push('<div style="margin-top:6px;">Code: ' + esc(String(res.blockCode || res.code || "ERROR")) + '</div>');
-    if (res.blockReason || res.message || res.error) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.blockReason || res.message || res.error || "Server returned an error.")) + '</div>');
-  } else if (batchState.action === "preview") {
-    parts.push('<div style="font-weight:800;">Batch Preview</div>');
-    parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
-    parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Sendable: ' + esc(res.sendable ? "YES" : "NO") + '</div>');
-    parts.push('<div style="margin-top:6px;">Total in Stage: ' + esc(String(Number(res.totalInStage || 0))) + ' | Eligible Unsent Found: ' + esc(String(Number(res.eligibleUnsentFound || 0))) + ' | Preview Limit: ' + esc(String(Number(res.previewLimit || 0))) + '</div>');
-    parts.push('<div style="margin-top:6px;">Prepared for Send: ' + esc(String(Number(res.eligible || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + ' | Already SENT Excluded: ' + esc(String(Number(res.alreadySentExcluded || 0))) + ' | Failed Excluded: ' + esc(String(Number(res.failedExcluded || 0))) + '</div>');
-    parts.push('<div style="margin-top:6px;">Selection Mode: next eligible unsent records' + (res.offsetIgnored ? ' | Diagnostic Offset Ignored: YES' : ' | Diagnostic Offset Ignored: NO') + ' | Elapsed: ' + esc(String(Number(res.elapsedMs || 0))) + ' ms</div>');
-    if (!Number(res.eligible || 0) && res.emptyReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.emptyReason || "")) + '</div>');
-    else if (res.sendDisabledReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.sendDisabledReason || "")) + '</div>');
-    if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
-    if (Array.isArray(res.eligibleApplicantIdsSample) && res.eligibleApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Eligible Sample: ' + esc(res.eligibleApplicantIdsSample.join(", ")) + '</div>');
-    if (Array.isArray(res.blockedApplicantIdsSample) && res.blockedApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Blocked Sample: ' + esc(res.blockedApplicantIdsSample.join(", ")) + '</div>');
+  var isPreview = String(res.action || "") === "preview_stage_batch" || batchState.action === "preview";
+  if (isPreview) {
+    if (res.ok === false) parts.push('<div style="font-weight:800;">Batch Preview Error</div>');
+    else if (Number(res.count || 0) > 0) parts.push('<div style="font-weight:800;">Batch Preview</div>');
+    else parts.push('<div style="font-weight:800;">Batch Preview Complete</div>');
+    parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Message: ' + esc(String(res.messageType || "(none)")) + ' | Count: ' + esc(String(Number(res.count || 0))) + '</div>');
+    parts.push('<div style="margin-top:6px;">Request ID: ' + esc(String(res.requestId || "")) + ' | Client Elapsed: ' + esc(String(Number(res.clientElapsedMs || 0))) + ' ms | Server Elapsed: ' + esc(String(Number(res.elapsedMs || 0))) + ' ms</div>');
+    if (res.ok === false) {
+      parts.push('<div style="margin-top:6px;">Error: ' + esc(String(res.message || res.error || "Preview failed.")) + '</div>');
+    } else {
+      parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.message || "Preview ready.")) + '</div>');
+      parts.push('<div style="margin-top:6px;">Eligible Unsent Found: ' + esc(String(Number(res.eligibleUnsentFound || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + ' | Already SENT Excluded: ' + esc(String(Number(res.alreadySentExcluded || 0))) + ' | Failed Excluded: ' + esc(String(Number(res.failedExcluded || 0))) + '</div>');
+      parts.push('<div style="margin-top:6px;">Selection Mode: next eligible unsent records' + (res.offsetIgnored ? ' | Diagnostic Offset Ignored: YES' : ' | Diagnostic Offset Ignored: NO') + '</div>');
+      if (!Number(res.count || 0) && res.emptyReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.emptyReason || "")) + '</div>');
+      if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
+      if (Array.isArray(res.eligibleApplicantIdsSample) && res.eligibleApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Eligible Sample: ' + esc(res.eligibleApplicantIdsSample.join(", ")) + '</div>');
+      if (Array.isArray(res.blockedApplicantIdsSample) && res.blockedApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Blocked Sample: ' + esc(res.blockedApplicantIdsSample.join(", ")) + '</div>');
+    }
   } else if (batchState.action === "send") {
     parts.push('<div style="font-weight:800;">Batch Send</div>');
     parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
@@ -1626,8 +1634,12 @@ function renderStageBatchSummary_(res){
     parts.push('<div style="margin-top:6px;">Already SENT Excluded: ' + esc(String(Number(res.alreadySentExcluded || 0))) + ' | Failed Excluded: ' + esc(String(Number(res.failedExcluded || 0))) + ' | Diagnostic Offset Ignored: ' + esc(res.offsetIgnored ? 'YES' : 'NO') + '</div>');
     if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
     if (Array.isArray(res.sentApplicantIdsSample) && res.sentApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Sent Sample: ' + esc(res.sentApplicantIdsSample.join(", ")) + '</div>');
+  } else if (res.ok === false) {
+    parts.push('<div style="font-weight:800;">Batch Action Failed</div>');
+    if (res.blockCode || res.code) parts.push('<div style="margin-top:6px;">Code: ' + esc(String(res.blockCode || res.code || "ERROR")) + '</div>');
+    if (res.blockReason || res.message || res.error) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.blockReason || res.message || res.error || "Server returned an error.")) + '</div>');
   }
-  if (res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(String(res.debugId || "")) + '</div>');
+  if (res.debugId && !isPreview) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(String(res.debugId || "")) + '</div>');
   box.classList.remove("hidden");
   box.classList.toggle("err", !!(res && res.ok === false));
   box.innerHTML = parts.join("");
@@ -1708,29 +1720,61 @@ function previewStageBatchUi_(){
   var limit = getStageBatchLimitUi_();
   var offset = getStageBatchOffsetUi_();
   if (!stage || batchState.busy || !IS_SUPER) return;
+  batchState.previewRequestSeq = Number(batchState.previewRequestSeq || 0) + 1;
+  var requestSeq = batchState.previewRequestSeq;
+  var clientRequestId = "preview-client-" + String(Date.now()) + "-" + String(requestSeq);
+  var requestStartedAtMs = Date.now();
   resetBatchPreviewState_(false);
+  batchState.previewActiveSeq = requestSeq;
+  batchState.previewClientRequestId = clientRequestId;
   batchState.busy = true;
   batchState.action = "preview";
   renderBatchPanel();
   google.script.run
     .withSuccessHandler(function(res){
+      if (batchState.previewActiveSeq !== requestSeq) return;
+      batchState.previewActiveSeq = 0;
       batchState.busy = false;
-      batchState.result = res && typeof res === "object" ? res : { ok: false, message: "Invalid preview response.", debugId: "" };
-      if (batchState.result && batchState.result.ok === true && String(batchState.result.stage || "").toUpperCase() === stage && Number(batchState.result.previewLimit || 0) === limit) {
+      batchState.previewClientElapsedMs = Date.now() - requestStartedAtMs;
+      var response = res && typeof res === "object" ? res : { ok: false, message: "Invalid preview response.", requestId: clientRequestId, stage: stage, messageType: batchState.messageType || "", count: 0, elapsedMs: 0, emptyReason: "" };
+      response.clientElapsedMs = batchState.previewClientElapsedMs;
+      if (!response.requestId) response.requestId = clientRequestId;
+      batchState.result = response;
+      if (response.ok === true && String(response.stage || "").toUpperCase() === stage && Number(response.previewLimit || 0) === limit && Number(response.count || 0) > 0) {
         batchState.previewReady = true;
         batchState.previewStage = stage;
         batchState.previewLimit = limit;
-        batchState.previewEligible = Number(batchState.result.eligible || 0);
+        batchState.previewEligible = Number(response.count || 0);
       } else {
         resetBatchPreviewState_(true);
+        batchState.result = response;
       }
       renderBatchPanel();
     })
     .withFailureHandler(function(err){
+      if (batchState.previewActiveSeq !== requestSeq) return;
+      batchState.previewActiveSeq = 0;
       batchState.busy = false;
+      var clientElapsedMs = Date.now() - requestStartedAtMs;
+      batchState.previewClientElapsedMs = clientElapsedMs;
       resetBatchPreviewState_(false);
       batchState.action = "preview";
-      batchState.result = { ok: false, message: String((err && err.message) || err || "Server failure"), debugId: "" };
+      batchState.result = {
+        ok: false,
+        action: "preview_stage_batch",
+        message: String((err && err.message) || err || "Preview request failed."),
+        error: String((err && err.message) || err || "Preview request failed."),
+        emptyReason: "",
+        elapsedMs: 0,
+        clientElapsedMs: clientElapsedMs,
+        requestId: clientRequestId,
+        stage: stage,
+        messageType: batchState.messageType || "",
+        count: 0,
+        previewLimit: limit,
+        requestedOffset: offset,
+        offsetIgnored: offset > 0
+      };
       renderBatchPanel();
     })
     .admin_previewStageBatch({ stage: stage, limit: limit, offset: offset });

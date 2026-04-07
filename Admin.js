@@ -3061,9 +3061,67 @@ function stageBatchShouldExcludeFailedDefault_(rowObj, messageType) {
 }
 
 function stageBatchLogSummary_(eventName, payload) {
+  var tag = clean_(eventName || "STAGE_BATCH");
+  var data = payload && typeof payload === "object" ? payload : {};
   try {
-    Logger.log(String(eventName || "STAGE_BATCH") + " " + JSON.stringify(payload || {}));
-  } catch (_logErr) {}
+    if (typeof campaignLog_ === "function") {
+      campaignLog_(tag, data);
+    } else {
+      Logger.log(tag + " " + JSON.stringify(data));
+    }
+  } catch (_logErr) {
+    try {
+      Logger.log(tag + " " + JSON.stringify(data));
+    } catch (_logErr2) {}
+  }
+}
+
+function stageBatchPreviewResponse_(data) {
+  var src = data && typeof data === "object" ? data : {};
+  var ok = src.ok === false ? false : true;
+  var emptyReason = clean_(src.emptyReason || "");
+  var message = clean_(src.message || "");
+  if (!message) {
+    if (ok && emptyReason) message = emptyReason;
+    else if (ok) message = "Preview ready.";
+    else message = clean_(src.blockReason || src.error || "Preview failed.");
+  }
+  return {
+    ok: ok,
+    action: "preview_stage_batch",
+    result: ok ? (Number(src.count != null ? src.count : src.eligible || 0) > 0 ? "PREVIEW" : "EMPTY") : "ERROR",
+    message: message,
+    emptyReason: emptyReason,
+    elapsedMs: Number(src.elapsedMs || 0),
+    requestId: clean_(src.requestId || src.debugId || adminDebugId_()),
+    debugId: clean_(src.debugId || src.requestId || adminDebugId_()),
+    stage: clean_(src.stage || ""),
+    messageType: clean_(src.messageType || ""),
+    count: Number(src.count != null ? src.count : src.eligible || 0),
+    clientElapsedMs: Number(src.clientElapsedMs || 0),
+    previewLimit: Number(src.previewLimit || src.limit || 0),
+    requestedOffset: Number(src.requestedOffset || 0),
+    offset: Number(src.offset || 0),
+    offsetApplied: src.offsetApplied === true,
+    offsetIgnored: src.offsetIgnored === true,
+    offsetMode: clean_(src.offsetMode || "PRODUCTION_STATEFUL"),
+    sendable: src.sendable === true,
+    sendDisabledReason: clean_(src.sendDisabledReason || ""),
+    totalInStage: Number(src.totalInStage || 0),
+    eligibleUnsentFound: Number(src.eligibleUnsentFound || 0),
+    eligible: Number(src.eligible || src.count || 0),
+    blocked: Number(src.blocked || 0),
+    alreadySentExcluded: Number(src.alreadySentExcluded || 0),
+    failedExcluded: Number(src.failedExcluded || 0),
+    blockedByReason: src.blockedByReason || {},
+    eligibleApplicantIdsSample: Array.isArray(src.eligibleApplicantIdsSample) ? src.eligibleApplicantIdsSample.slice(0, 10) : [],
+    blockedApplicantIdsSample: Array.isArray(src.blockedApplicantIdsSample) ? src.blockedApplicantIdsSample.slice(0, 10) : [],
+    priority: clean_(src.priority || ""),
+    blockCode: clean_(src.blockCode || src.code || ""),
+    blockReason: clean_(src.blockReason || src.error || ""),
+    error: clean_(src.error || (!ok ? message : "")),
+    phaseTimings: src.phaseTimings || {}
+  };
 }
 
 function stageBatchEmptyReason_(cohort) {
@@ -3097,7 +3155,14 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
   var actorEmail = clean_(options.actorEmail || "");
   var actorRole = clean_(options.actorRole || "");
   var debugId = clean_(options.debugId || newDebugId_());
+  var requestId = clean_(options.requestId || debugId || newDebugId_());
   var inviteStatefulFlow = normalizedStage === "INVITE_PENDING" || messageType === "legacy_invite";
+  var phaseTimings = options.phaseTimings && typeof options.phaseTimings === "object" ? options.phaseTimings : {};
+  phaseTimings.candidateSelectionMs = Number(phaseTimings.candidateSelectionMs || 0);
+  phaseTimings.eligibilityFilteringMs = Number(phaseTimings.eligibilityFilteringMs || 0);
+  phaseTimings.rowHydrationMs = Number(phaseTimings.rowHydrationMs || 0);
+  phaseTimings.resolutionMs = Number(phaseTimings.resolutionMs || 0);
+  phaseTimings.payloadAssemblyMs = Number(phaseTimings.payloadAssemblyMs || 0);
   var sh = openDataSheet_();
   var values = sh.getDataRange().getValues();
   var headers = (values && values.length) ? values[0] : [];
@@ -3114,6 +3179,7 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
     var emptyCohort = {
       stage: normalizedStage,
       messageType: messageType,
+      requestId: requestId,
       limit: batchLimit,
       requestedOffset: requestedOffset,
       offset: 0,
@@ -3128,38 +3194,52 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
       blockedByReason: {},
       blockedApplicantIdsSample: [],
       candidates: [],
-      elapsedMs: new Date().getTime() - startedAtMs
+      elapsedMs: new Date().getTime() - startedAtMs,
+      phaseTimings: phaseTimings
     };
     emptyCohort.emptyReason = stageBatchEmptyReason_(emptyCohort);
     return emptyCohort;
   }
   for (var r = 1; r < values.length; r++) {
+    var hydrateStartedAtMs = new Date().getTime();
     var row = values[r] || [];
     var rowObj = {};
     for (var c = 0; c < headers.length; c++) {
       var h = clean_(headers[c]);
       if (h) rowObj[h] = row[c];
     }
+    phaseTimings.rowHydrationMs += new Date().getTime() - hydrateStartedAtMs;
     var applicantId = clean_(rowObj.ApplicantID || "");
     if (!applicantId) continue;
+    var candidateStartedAtMs = new Date().getTime();
     var snapshot = stageAggregationSnapshot_(rowObj);
+    phaseTimings.candidateSelectionMs += new Date().getTime() - candidateStartedAtMs;
     if (clean_(snapshot.stage || "").toUpperCase() !== normalizedStage) continue;
     totalInStage++;
-    if (!messageType) continue;
+    var filterStartedAtMs = new Date().getTime();
+    if (!messageType) {
+      phaseTimings.eligibilityFilteringMs += new Date().getTime() - filterStartedAtMs;
+      continue;
+    }
     if (inviteStatefulFlow && normalizeEmailStatus_(rowObj.Email_Status || "") === "SENT") {
       alreadySentExcluded++;
+      phaseTimings.eligibilityFilteringMs += new Date().getTime() - filterStartedAtMs;
       continue;
     }
     if (inviteStatefulFlow && stageBatchShouldExcludeFailedDefault_(rowObj, messageType)) {
       failedExcluded++;
+      phaseTimings.eligibilityFilteringMs += new Date().getTime() - filterStartedAtMs;
       continue;
     }
+    phaseTimings.eligibilityFilteringMs += new Date().getTime() - filterStartedAtMs;
     var resolved = resolveApplicantMessageContextFromRow_(rowObj, r + 1, sh, messageType, {
       action: "stageBatchCollect",
       actorEmail: actorEmail,
       actorRole: actorRole,
       debugId: debugId,
-      applicantId: applicantId
+      applicantId: applicantId,
+      requestId: requestId,
+      previewMetrics: phaseTimings
     });
     if (resolved && resolved.eligible) {
       eligibleUnsentTotal++;
@@ -3179,6 +3259,7 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
   var cohort = {
     stage: normalizedStage,
     messageType: messageType,
+    requestId: requestId,
     limit: batchLimit,
     requestedOffset: requestedOffset,
     offset: 0,
@@ -3193,7 +3274,8 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
     blockedByReason: blockedByReason,
     blockedApplicantIdsSample: blockedApplicantIdsSample,
     candidates: candidates,
-    elapsedMs: new Date().getTime() - startedAtMs
+    elapsedMs: new Date().getTime() - startedAtMs,
+    phaseTimings: phaseTimings
   };
   cohort.emptyReason = stageBatchEmptyReason_(cohort);
   return cohort;
@@ -3202,97 +3284,185 @@ function collectStageBatchCohort_(stage, limit, offset, opts) {
 function admin_previewStageBatch(payload) {
   return withEnvelope_("admin_previewStageBatch", function (dbgId) {
     var startedAtMs = new Date().getTime();
-    var adminEmail = getActiveUserEmail_();
-    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
-    requireSuperAdmin_(adminEmail);
-    var p = payload && typeof payload === "object" ? payload : {};
-    var actor = resolveAdminCommActor_(p);
-    var stage = normalizeStageBatchStage_(p.stage || "");
-    var limit = clampStageBatchLimit_(p.limit);
-    var requestedOffset = clampStageBatchOffset_(p.offset);
-    stageBatchLogSummary_("STAGE_BATCH_PREVIEW_REQUEST", {
+    var requestId = clean_(dbgId || newDebugId_());
+    var stage = "";
+    var messageType = "";
+    var limit = 0;
+    var requestedOffset = 0;
+    var phaseTimings = {
+      candidateSelectionMs: 0,
+      eligibilityFilteringMs: 0,
+      rowHydrationMs: 0,
+      resolutionMs: 0,
+      payloadAssemblyMs: 0
+    };
+    stageBatchLogSummary_("STAGE_BATCH_PREVIEW_START", {
+      requestId: requestId,
       debugId: dbgId,
       stage: stage,
-      messageType: getBatchMessageTypeForStage_(stage),
+      messageType: messageType,
       batchSizeRequested: limit,
       requestedOffset: requestedOffset
     });
-    if (!stage) {
-      return adminCommBlockedResult_("preview_stage_batch", "UNSUPPORTED_STAGE", dbgId, {
-        blockReason: "Unsupported stage for batch preview.",
-        limit: limit,
-        offset: requestedOffset
-      });
-    }
-    var messageType = getBatchMessageTypeForStage_(stage);
-    var sendable = !!messageType;
-    var priority = mapStagePriority_(stage);
-    var cohort = collectStageBatchCohort_(stage, limit, requestedOffset, {
-      messageType: messageType,
-      actorEmail: actor.actorEmail,
-      actorRole: actor.actorRole,
-      debugId: dbgId
-    });
-    var emptyReason = clean_(cohort.emptyReason || "");
-    var out = {
-      ok: true,
-      stage: stage,
-      priority: priority,
-      messageType: messageType,
-      sendable: sendable,
-      sendDisabledReason: sendable ? "" : "No batch message is supported for this stage.",
-      totalInStage: Number(cohort.totalInStage || 0),
-      eligibleUnsentFound: Number(cohort.eligibleUnsentTotal || 0),
-      previewLimit: Number(cohort.limit || limit),
-      requestedOffset: requestedOffset,
-      offset: Number(cohort.offset || 0),
-      offsetApplied: cohort.offsetApplied === true,
-      offsetIgnored: cohort.offsetIgnored === true,
-      offsetMode: clean_(cohort.offsetMode || "PRODUCTION_STATEFUL"),
-      eligible: Number((cohort.candidates || []).length || 0),
-      blocked: Number(cohort.blockedTotal || 0),
-      alreadySentExcluded: Number(cohort.alreadySentExcluded || 0),
-      failedExcluded: Number(cohort.failedExcluded || 0),
-      blockedByReason: cohort.blockedByReason || {},
-      eligibleApplicantIdsSample: [],
-      blockedApplicantIdsSample: Array.isArray(cohort.blockedApplicantIdsSample) ? cohort.blockedApplicantIdsSample.slice(0, 10) : [],
-      emptyReason: emptyReason,
-      elapsedMs: Number(cohort.elapsedMs || 0)
-    };
-    (cohort.candidates || []).forEach(function (candidate) {
-      pushStageBatchSample_(out.eligibleApplicantIdsSample, candidate.applicantId);
-    });
-    if (!sendable || out.eligible <= 0) {
-      clearStageBatchPreviewCache_(adminEmail);
-    } else {
-      writeStageBatchPreviewCache_(adminEmail, {
+    try {
+      var adminEmail = getActiveUserEmail_();
+      if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+      requireSuperAdmin_(adminEmail);
+      var p = payload && typeof payload === "object" ? payload : {};
+      var actor = resolveAdminCommActor_(p);
+      stage = normalizeStageBatchStage_(p.stage || "");
+      limit = clampStageBatchLimit_(p.limit);
+      requestedOffset = clampStageBatchOffset_(p.offset);
+      messageType = getBatchMessageTypeForStage_(stage);
+      stageBatchLogSummary_("STAGE_BATCH_PREVIEW_REQUEST", {
+        requestId: requestId,
+        debugId: dbgId,
         stage: stage,
-        limit: Number(out.previewLimit || limit),
         messageType: messageType,
-        eligible: Number(out.eligible || 0),
-        eligibleUnsentFound: Number(out.eligibleUnsentFound || 0),
-        debugId: dbgId
+        batchSizeRequested: limit,
+        requestedOffset: requestedOffset
       });
+      if (!stage) {
+        var invalidOut = stageBatchPreviewResponse_({
+          ok: false,
+          message: "Unsupported stage for batch preview.",
+          requestId: requestId,
+          debugId: dbgId,
+          stage: stage,
+          messageType: messageType,
+          count: 0,
+          previewLimit: limit,
+          requestedOffset: requestedOffset,
+          offsetIgnored: requestedOffset > 0,
+          elapsedMs: new Date().getTime() - startedAtMs,
+          phaseTimings: phaseTimings
+        });
+        stageBatchLogSummary_("STAGE_BATCH_PREVIEW_END", {
+          requestId: requestId,
+          debugId: dbgId,
+          stage: stage,
+          messageType: messageType,
+          batchSizeRequested: limit,
+          requestedOffset: requestedOffset,
+          outcome: "error",
+          elapsedMs: invalidOut.elapsedMs,
+          error: invalidOut.message,
+          phaseTimings: phaseTimings
+        });
+        return invalidOut;
+      }
+      var sendable = !!messageType;
+      var priority = mapStagePriority_(stage);
+      var cohort = collectStageBatchCohort_(stage, limit, requestedOffset, {
+        messageType: messageType,
+        actorEmail: actor.actorEmail,
+        actorRole: actor.actorRole,
+        debugId: dbgId,
+        requestId: requestId,
+        phaseTimings: phaseTimings
+      });
+      var assemblyStartedAtMs = new Date().getTime();
+      var emptyReason = clean_(cohort.emptyReason || "");
+      var out = stageBatchPreviewResponse_({
+        ok: true,
+        message: emptyReason || "Preview ready.",
+        stage: stage,
+        priority: priority,
+        requestId: requestId,
+        debugId: dbgId,
+        messageType: messageType,
+        sendable: sendable,
+        sendDisabledReason: sendable ? "" : "No batch message is supported for this stage.",
+        totalInStage: Number(cohort.totalInStage || 0),
+        eligibleUnsentFound: Number(cohort.eligibleUnsentTotal || 0),
+        previewLimit: Number(cohort.limit || limit),
+        requestedOffset: requestedOffset,
+        offset: Number(cohort.offset || 0),
+        offsetApplied: cohort.offsetApplied === true,
+        offsetIgnored: cohort.offsetIgnored === true,
+        offsetMode: clean_(cohort.offsetMode || "PRODUCTION_STATEFUL"),
+        count: Number((cohort.candidates || []).length || 0),
+        eligible: Number((cohort.candidates || []).length || 0),
+        blocked: Number(cohort.blockedTotal || 0),
+        alreadySentExcluded: Number(cohort.alreadySentExcluded || 0),
+        failedExcluded: Number(cohort.failedExcluded || 0),
+        blockedByReason: cohort.blockedByReason || {},
+        eligibleApplicantIdsSample: [],
+        blockedApplicantIdsSample: Array.isArray(cohort.blockedApplicantIdsSample) ? cohort.blockedApplicantIdsSample.slice(0, 10) : [],
+        emptyReason: emptyReason,
+        elapsedMs: Number(cohort.elapsedMs || 0),
+        phaseTimings: cohort.phaseTimings || phaseTimings
+      });
+      (cohort.candidates || []).forEach(function (candidate) {
+        pushStageBatchSample_(out.eligibleApplicantIdsSample, candidate.applicantId);
+      });
+      phaseTimings.payloadAssemblyMs += new Date().getTime() - assemblyStartedAtMs;
+      if (!sendable || out.count <= 0) {
+        clearStageBatchPreviewCache_(adminEmail);
+      } else {
+        writeStageBatchPreviewCache_(adminEmail, {
+          stage: stage,
+          limit: Number(out.previewLimit || limit),
+          messageType: messageType,
+          eligible: Number(out.count || 0),
+          eligibleUnsentFound: Number(out.eligibleUnsentFound || 0),
+          debugId: dbgId,
+          requestId: requestId
+        });
+      }
+      out.elapsedMs = Math.max(Number(out.elapsedMs || 0), new Date().getTime() - startedAtMs);
+      out.phaseTimings = phaseTimings;
+      out.message = out.count > 0 ? "Preview ready." : (out.emptyReason || "No eligible unsent invite candidates found under current rules.");
+      stageBatchLogSummary_("STAGE_BATCH_PREVIEW_END", {
+        requestId: requestId,
+        debugId: dbgId,
+        stage: stage,
+        messageType: messageType,
+        batchSizeRequested: limit,
+        requestedOffset: requestedOffset,
+        offsetIgnored: out.offsetIgnored === true,
+        eligibleUnsentCandidateCount: out.eligibleUnsentFound,
+        finalPreviewResultCount: out.count,
+        alreadySentExcluded: out.alreadySentExcluded,
+        blockedExcluded: out.blocked,
+        failedExcluded: out.failedExcluded,
+        blockedByReason: out.blockedByReason,
+        zeroResultReason: out.count > 0 ? "" : out.emptyReason,
+        outcome: out.count > 0 ? "success" : "empty",
+        elapsedMs: out.elapsedMs,
+        phaseTimings: phaseTimings
+      });
+      return out;
+    } catch (e) {
+      var errorOut = stageBatchPreviewResponse_({
+        ok: false,
+        message: String(e && e.message ? e.message : e || "Preview failed."),
+        requestId: requestId,
+        debugId: dbgId,
+        stage: stage,
+        messageType: messageType,
+        count: 0,
+        previewLimit: limit,
+        requestedOffset: requestedOffset,
+        offsetIgnored: requestedOffset > 0,
+        elapsedMs: new Date().getTime() - startedAtMs,
+        phaseTimings: phaseTimings,
+        error: String(e && e.message ? e.message : e || "Preview failed.")
+      });
+      stageBatchLogSummary_("STAGE_BATCH_PREVIEW_END", {
+        requestId: requestId,
+        debugId: dbgId,
+        stage: stage,
+        messageType: messageType,
+        batchSizeRequested: limit,
+        requestedOffset: requestedOffset,
+        outcome: "error",
+        elapsedMs: errorOut.elapsedMs,
+        error: errorOut.message,
+        phaseTimings: phaseTimings
+      });
+      return errorOut;
     }
-    var elapsedMs = Math.max(Number(out.elapsedMs || 0), new Date().getTime() - startedAtMs);
-    out.elapsedMs = elapsedMs;
-    stageBatchLogSummary_("STAGE_BATCH_PREVIEW_SUMMARY", {
-      debugId: dbgId,
-      stage: stage,
-      messageType: messageType,
-      batchSizeRequested: limit,
-      requestedOffset: requestedOffset,
-      offsetIgnored: out.offsetIgnored === true,
-      eligibleUnsentCandidateCount: out.eligibleUnsentFound,
-      finalPreviewResultCount: out.eligible,
-      alreadySentExcluded: out.alreadySentExcluded,
-      blockedExcluded: out.blocked,
-      failedExcluded: out.failedExcluded,
-      blockedByReason: out.blockedByReason,
-      zeroResultReason: out.eligible > 0 ? "" : out.emptyReason,
-      elapsedMs: elapsedMs
-    });
-    return out;
   });
 }
 

@@ -6022,9 +6022,12 @@ function buildPaymentFollowupEmailBody_(context) {
 function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messageType, opts) {
   var options = opts && typeof opts === "object" ? opts : {};
   var debugId = clean_(options.debugId || newDebugId_());
+  var requestId = clean_(options.requestId || debugId || newDebugId_());
   var normalizedType = normalizeApplicantMessageType_(messageType);
   var actor = communicationGetActorInfo_(options);
   var row = rowObj || {};
+  var previewMetrics = options.previewMetrics && typeof options.previewMetrics === "object" ? options.previewMetrics : null;
+  var resolutionStartedAtMs = new Date().getTime();
   var context = {
     ok: true,
     eligible: false,
@@ -6041,6 +6044,7 @@ function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messag
     paymentVerified: false,
     requiresPortalUrl: false,
     debugId: debugId,
+    requestId: requestId,
     actorEmail: actor.email,
     actorRole: actor.role,
     rowNumber: Number(rowNumber || 0),
@@ -6048,11 +6052,21 @@ function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messag
     batchLabel: clean_(options.batchLabel || "")
   };
 
+  function finalize(outcome) {
+    if (previewMetrics) {
+      previewMetrics.resolutionMs = Number(previewMetrics.resolutionMs || 0) + (new Date().getTime() - resolutionStartedAtMs);
+      previewMetrics.resolutionCount = Number(previewMetrics.resolutionCount || 0) + 1;
+      if (outcome === "eligible") previewMetrics.resolutionEligibleCount = Number(previewMetrics.resolutionEligibleCount || 0) + 1;
+      else previewMetrics.resolutionBlockedCount = Number(previewMetrics.resolutionBlockedCount || 0) + 1;
+    }
+    return context;
+  }
+
   function block(code, reason) {
     context.eligible = false;
     context.blockCode = clean_(code || "");
     context.blockReason = clean_(reason || communicationBlockReason_(context.blockCode, context.messageType));
-    return context;
+    return finalize("blocked");
   }
 
   if (!normalizedType) return block("UNKNOWN_MESSAGE_TYPE");
@@ -6095,7 +6109,7 @@ function resolveApplicantMessageContextFromRow_(rowObj, rowNumber, sheet, messag
   }
 
   context.eligible = true;
-  return context;
+  return finalize("eligible");
 }
 
 function resolveApplicantMessageContext_(applicantId, messageType, opts) {

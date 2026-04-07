@@ -7,10 +7,10 @@
  */
 var CONFIG = {
   // Versioning (change control)
-VERSION: "r254C3iC",
-CHANGELOG_LAST: "r244D: align main portal working sheet to PROD and sync runtime identity",
-DEPLOY_VERSION_NUMBER: 83,
-BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
+VERSION: "r087",
+CHANGELOG_LAST: "r087: preview completion and version discipline",
+DEPLOY_VERSION_NUMBER: 87,
+BUILD_LABEL: "r087 preview completion and version discipline",
 
   // STAGING/PROD data mode routing (working sheet)
   DATA_MODE: "PROD", // "STAGING" | "PROD"
