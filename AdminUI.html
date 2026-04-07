@@ -448,12 +448,12 @@
           <input id="stageBatchLimit" type="number" min="1" max="100" step="1" value="50">
         </div>
         <div class="field" style="max-width:180px;">
-          <label>Start Offset</label>
+          <label>Diagnostic Offset (ignored in production)</label>
           <input id="stageBatchOffset" type="number" min="0" step="1" value="0">
         </div>
         <button id="btnStageBatchPreview" class="btn small" type="button" onclick="previewStageBatchUi_()">Preview Cohort</button>
         <button id="btnStageBatchSend" class="btn small ok" type="button" onclick="sendStageBatchUi_()" disabled>Send Stage Batch</button>
-        <div id="stageBatchInlineNote" class="muted" style="font-size:12px;"></div>
+        <div id="stageBatchInlineNote" class="muted" style="font-size:12px;">Standard production stage sends automatically use the next eligible unsent records. Diagnostic offset is ignored unless a separate diagnostic flow is introduced.</div>
       </div>
       <div id="stageBatchSummary" class="sendSummary hidden"></div>
     </div>
@@ -1539,232 +1539,237 @@
       return value;
     }
     function getStageBatchOffsetUi_(){
-      var el = document.getElementById("stageBatchOffset");
-      var value = clampStageBatchOffsetUi_(el && el.value);
-      if (el) el.value = String(value);
-      return value;
-    }
-    function resetBatchPreviewState_(preserveResult){
-      batchState.previewReady = false;
-      batchState.previewStage = null;
-      batchState.previewLimit = null;
-      batchState.previewOffset = null;
-      batchState.previewEligible = 0;
-      if (!preserveResult) batchState.result = null;
-    }
-    function clearBatchSelection_(preserveResult){
-      batchState.selectedStage = null;
-      batchState.priority = null;
-      batchState.messageType = null;
-      batchState.sendable = false;
-      batchState.disabledReason = "";
-      resetBatchPreviewState_(preserveResult);
-    }
-    function onStageSelected(stageIndex){
-      var idx = Number(stageIndex);
-      var item = Number.isFinite(idx) && idx >= 0 ? stageDashboardState[idx] : null;
-      var stage = item ? String(item.stage || "").trim().toUpperCase() : "";
-      if (!stage) {
-        selectedStageFilter = "";
-        clearBatchSelection_(false);
-        renderStageDashboard_(stageDashboardState);
-        renderBatchPanel();
-        search();
-        return;
-      }
-      if (selectedStageFilter === stage) {
-        selectedStageFilter = "";
-        clearBatchSelection_(false);
+  var el = document.getElementById("stageBatchOffset");
+  var value = clampStageBatchOffsetUi_(el && el.value);
+  if (el) el.value = String(value);
+  return value;
+}
+function resetBatchPreviewState_(preserveResult){
+  batchState.previewReady = false;
+  batchState.previewStage = null;
+  batchState.previewLimit = null;
+  batchState.previewOffset = null;
+  batchState.previewEligible = 0;
+  if (!preserveResult) batchState.result = null;
+}
+function clearBatchSelection_(preserveResult){
+  batchState.selectedStage = null;
+  batchState.priority = null;
+  batchState.messageType = null;
+  batchState.sendable = false;
+  batchState.disabledReason = "";
+  resetBatchPreviewState_(preserveResult);
+}
+function onStageSelected(stageIndex){
+  var idx = Number(stageIndex);
+  var item = Number.isFinite(idx) && idx >= 0 ? stageDashboardState[idx] : null;
+  var stage = item ? String(item.stage || "").trim().toUpperCase() : "";
+  if (!stage) {
+    selectedStageFilter = "";
+    clearBatchSelection_(false);
+    renderStageDashboard_(stageDashboardState);
+    renderBatchPanel();
+    search();
+    return;
+  }
+  if (selectedStageFilter === stage) {
+    selectedStageFilter = "";
+    clearBatchSelection_(false);
+  } else {
+    selectedStageFilter = stage;
+    batchState.selectedStage = stage;
+    batchState.priority = String(item.priority || mapStagePriorityUi_(stage)).trim().toUpperCase() || mapStagePriorityUi_(stage);
+    batchState.messageType = getBatchMessageTypeForStageUi_(stage);
+    batchState.sendable = isBatchSendableStageUi_(stage);
+    batchState.disabledReason = batchState.sendable ? "" : "No batch message is supported for this stage.";
+    resetBatchPreviewState_(false);
+  }
+  renderStageDashboard_(stageDashboardState);
+  renderBatchPanel();
+  search();
+}
+function renderStageBatchSummary_(res){
+  var box = document.getElementById("stageBatchSummary");
+  if (!box) return;
+  if (!res) {
+    box.classList.add("hidden");
+    box.classList.remove("err");
+    box.innerHTML = "";
+    return;
+  }
+  var parts = [];
+  var blockedMap = (res && typeof res.blockedByReason === "object" && res.blockedByReason) ? res.blockedByReason : {};
+  var blockedList = Object.keys(blockedMap).sort().map(function(key){
+    return '<span>' + esc(key) + ': ' + esc(String(Number(blockedMap[key] || 0))) + '</span>';
+  }).join(' | ');
+  if (res.ok === false) {
+    parts.push('<div style="font-weight:800;">Batch Action Failed</div>');
+    if (res.blockCode || res.code) parts.push('<div style="margin-top:6px;">Code: ' + esc(String(res.blockCode || res.code || "ERROR")) + '</div>');
+    if (res.blockReason || res.message || res.error) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.blockReason || res.message || res.error || "Server returned an error.")) + '</div>');
+  } else if (batchState.action === "preview") {
+    parts.push('<div style="font-weight:800;">Batch Preview</div>');
+    parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
+    parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Sendable: ' + esc(res.sendable ? "YES" : "NO") + '</div>');
+    parts.push('<div style="margin-top:6px;">Total in Stage: ' + esc(String(Number(res.totalInStage || 0))) + ' | Eligible Unsent Found: ' + esc(String(Number(res.eligibleUnsentFound || 0))) + ' | Preview Limit: ' + esc(String(Number(res.previewLimit || 0))) + '</div>');
+    parts.push('<div style="margin-top:6px;">Prepared for Send: ' + esc(String(Number(res.eligible || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + ' | Already SENT Excluded: ' + esc(String(Number(res.alreadySentExcluded || 0))) + ' | Failed Excluded: ' + esc(String(Number(res.failedExcluded || 0))) + '</div>');
+    parts.push('<div style="margin-top:6px;">Selection Mode: next eligible unsent records' + (res.offsetIgnored ? ' | Diagnostic Offset Ignored: YES' : ' | Diagnostic Offset Ignored: NO') + '</div>');
+    if (res.sendDisabledReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.sendDisabledReason || "")) + '</div>');
+    if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
+    if (Array.isArray(res.eligibleApplicantIdsSample) && res.eligibleApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Eligible Sample: ' + esc(res.eligibleApplicantIdsSample.join(", ")) + '</div>');
+    if (Array.isArray(res.blockedApplicantIdsSample) && res.blockedApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Blocked Sample: ' + esc(res.blockedApplicantIdsSample.join(", ")) + '</div>');
+  } else if (batchState.action === "send") {
+    parts.push('<div style="font-weight:800;">Batch Send</div>');
+    parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
+    parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Send Limit: ' + esc(String(Number(res.sendLimit || 0))) + ' | Eligible Unsent Found: ' + esc(String(Number(res.eligibleUnsentFoundAtSend || 0))) + '</div>');
+    parts.push('<div style="margin-top:6px;">Attempted: ' + esc(String(Number(res.attempted || 0))) + ' | Sent: ' + esc(String(Number(res.sent || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + ' | Failed: ' + esc(String(Number(res.failed || 0))) + '</div>');
+    parts.push('<div style="margin-top:6px;">Already SENT Excluded: ' + esc(String(Number(res.alreadySentExcluded || 0))) + ' | Failed Excluded: ' + esc(String(Number(res.failedExcluded || 0))) + ' | Diagnostic Offset Ignored: ' + esc(res.offsetIgnored ? 'YES' : 'NO') + '</div>');
+    if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
+    if (Array.isArray(res.sentApplicantIdsSample) && res.sentApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Sent Sample: ' + esc(res.sentApplicantIdsSample.join(", ")) + '</div>');
+  }
+  if (res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(String(res.debugId || "")) + '</div>');
+  box.classList.remove("hidden");
+  box.classList.toggle("err", !!(res && res.ok === false));
+  box.innerHTML = parts.join("");
+}
+function renderBatchPanel(){
+  var selectedStage = batchState.selectedStage;
+  var priority = batchState.priority;
+  var messageType = batchState.messageType || "";
+  var sendable = batchState.sendable === true;
+  var limit = getStageBatchLimitUi_();
+  getStageBatchOffsetUi_();
+  var stageEl = document.getElementById("stageBatchSelectedStage");
+  var priorityEl = document.getElementById("stageBatchPriority");
+  var msgTypeEl = document.getElementById("stageBatchMessageType");
+  var sendableEl = document.getElementById("stageBatchSendable");
+  var disabledReasonEl = document.getElementById("stageBatchDisabledReason");
+  var previewBtn = document.getElementById("btnStageBatchPreview");
+  var sendBtn = document.getElementById("btnStageBatchSend");
+  var noteEl = document.getElementById("stageBatchInlineNote");
+  if (stageEl) stageEl.textContent = selectedStage || "-";
+  if (priorityEl) priorityEl.innerHTML = selectedStage ? renderPriorityBadge_(priority || mapStagePriorityUi_(selectedStage)) : "&mdash;";
+  if (msgTypeEl) msgTypeEl.textContent = messageType || "-";
+  if (sendableEl) sendableEl.textContent = selectedStage ? (sendable ? "YES" : "NO") : "-";
+  var disabledReason = "";
+  if (!selectedStage) disabledReason = "Select a stage card to preview or send the next eligible unsent cohort.";
+  else if (!IS_SUPER) disabledReason = "SUPER admin required for stage batch actions.";
+  else if (!sendable) disabledReason = batchState.disabledReason || "No batch message is supported for this stage.";
+  batchState.disabledReason = disabledReason;
+  if (disabledReasonEl) disabledReasonEl.textContent = disabledReason || "-";
+  var previewReady = batchState.previewReady === true
+    && batchState.selectedStage === batchState.previewStage
+    && Number(batchState.previewLimit || 0) === limit
+    && sendable;
+  if (previewBtn) {
+    previewBtn.disabled = !selectedStage || batchState.busy || !IS_SUPER;
+    previewBtn.textContent = batchState.busy && batchState.action === "preview" ? "Previewing..." : "Preview Cohort";
+  }
+  if (sendBtn) {
+    sendBtn.disabled = !previewReady || batchState.busy || !IS_SUPER;
+    sendBtn.textContent = batchState.busy && batchState.action === "send" ? "Sending..." : "Send Stage Batch";
+  }
+  if (noteEl) {
+    if (batchState.busy && batchState.action === "preview") noteEl.textContent = "Loading the next eligible unsent cohort...";
+    else if (batchState.busy && batchState.action === "send") noteEl.textContent = "Sending the next eligible unsent cohort...";
+    else if (disabledReason) noteEl.textContent = disabledReason;
+    else if (previewReady) noteEl.textContent = "Preview ready for send. Standard production flow uses the next eligible unsent records; diagnostic offset is ignored.";
+    else noteEl.textContent = "Preview is required before send. Standard production flow uses the next eligible unsent records; diagnostic offset is ignored.";
+  }
+  renderStageBatchSummary_(batchState.result);
+}
+function onStageBatchLimitChange_(){
+  getStageBatchLimitUi_();
+  resetBatchPreviewState_(false);
+  renderBatchPanel();
+}
+function onStageBatchOffsetChange_(){
+  getStageBatchOffsetUi_();
+  renderBatchPanel();
+}
+function bindStageBatchControls_(){
+  var limitInput = document.getElementById("stageBatchLimit");
+  if (limitInput && limitInput.dataset.bound !== "1") {
+    limitInput.dataset.bound = "1";
+    limitInput.addEventListener("change", onStageBatchLimitChange_);
+    limitInput.addEventListener("input", onStageBatchLimitChange_);
+  }
+  var offsetInput = document.getElementById("stageBatchOffset");
+  if (offsetInput && offsetInput.dataset.bound !== "1") {
+    offsetInput.dataset.bound = "1";
+    offsetInput.addEventListener("change", onStageBatchOffsetChange_);
+    offsetInput.addEventListener("input", onStageBatchOffsetChange_);
+  }
+  renderBatchPanel();
+}
+function previewStageBatchUi_(){
+  var stage = batchState.selectedStage;
+  var limit = getStageBatchLimitUi_();
+  var offset = getStageBatchOffsetUi_();
+  if (!stage || batchState.busy || !IS_SUPER) return;
+  resetBatchPreviewState_(false);
+  batchState.busy = true;
+  batchState.action = "preview";
+  renderBatchPanel();
+  google.script.run
+    .withSuccessHandler(function(res){
+      batchState.busy = false;
+      batchState.result = res && typeof res === "object" ? res : { ok: false, message: "Invalid preview response.", debugId: "" };
+      if (batchState.result && batchState.result.ok === true && String(batchState.result.stage || "").toUpperCase() === stage && Number(batchState.result.previewLimit || 0) === limit) {
+        batchState.previewReady = true;
+        batchState.previewStage = stage;
+        batchState.previewLimit = limit;
+        batchState.previewEligible = Number(batchState.result.eligible || 0);
       } else {
-        selectedStageFilter = stage;
-        batchState.selectedStage = stage;
-        batchState.priority = String(item.priority || mapStagePriorityUi_(stage)).trim().toUpperCase() || mapStagePriorityUi_(stage);
-        batchState.messageType = getBatchMessageTypeForStageUi_(stage);
-        batchState.sendable = isBatchSendableStageUi_(stage);
-        batchState.disabledReason = batchState.sendable ? "" : "No batch message is supported for this stage.";
-        resetBatchPreviewState_(false);
+        resetBatchPreviewState_(true);
       }
-      renderStageDashboard_(stageDashboardState);
       renderBatchPanel();
-      search();
-    }
-    function renderStageBatchSummary_(res){
-      var box = document.getElementById("stageBatchSummary");
-      if (!box) return;
-      if (!res) {
-        box.classList.add("hidden");
-        box.classList.remove("err");
-        box.innerHTML = "";
-        return;
-      }
-      var parts = [];
-      var blockedMap = (res && typeof res.blockedByReason === "object" && res.blockedByReason) ? res.blockedByReason : {};
-      var blockedList = Object.keys(blockedMap).sort().map(function(key){
-        return '<span>' + esc(key) + ': ' + esc(String(Number(blockedMap[key] || 0))) + '</span>';
-      }).join(' | ');
-      if (res.ok === false) {
-        parts.push('<div style="font-weight:800;">Batch Action Failed</div>');
-        if (res.blockCode || res.code) parts.push('<div style="margin-top:6px;">Code: ' + esc(String(res.blockCode || res.code || "ERROR")) + '</div>');
-        if (res.blockReason || res.message || res.error) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.blockReason || res.message || res.error || "Server returned an error.")) + '</div>');
-      } else if (batchState.action === "preview") {
-        parts.push('<div style="font-weight:800;">Batch Preview</div>');
-        parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
-        parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Sendable: ' + esc(res.sendable ? "YES" : "NO") + '</div>');
-        parts.push('<div style="margin-top:6px;">Total in Stage: ' + esc(String(Number(res.totalInStage || 0))) + ' | Offset: ' + esc(String(Number(res.offset || 0))) + ' | Preview Limit: ' + esc(String(Number(res.previewLimit || 0))) + ' | Scanned: ' + esc(String(Number(res.scanned || 0))) + '</div>');
-        parts.push('<div style="margin-top:6px;">Eligible: ' + esc(String(Number(res.eligible || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + '</div>');
-        if (res.sendDisabledReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.sendDisabledReason || "")) + '</div>');
-        if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
-        if (Array.isArray(res.eligibleApplicantIdsSample) && res.eligibleApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Eligible Sample: ' + esc(res.eligibleApplicantIdsSample.join(", ")) + '</div>');
-        if (Array.isArray(res.blockedApplicantIdsSample) && res.blockedApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Blocked Sample: ' + esc(res.blockedApplicantIdsSample.join(", ")) + '</div>');
-      } else if (batchState.action === "send") {
-        parts.push('<div style="font-weight:800;">Batch Send</div>');
-        parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
-        parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Offset: ' + esc(String(Number(res.offset || 0))) + ' | Send Limit: ' + esc(String(Number(res.sendLimit || 0))) + '</div>');
-        parts.push('<div style="margin-top:6px;">Total in Stage at Send: ' + esc(String(Number(res.totalInStageAtSend || 0))) + ' | Attempted: ' + esc(String(Number(res.attempted || 0))) + '</div>');
-        parts.push('<div style="margin-top:6px;">Sent: ' + esc(String(Number(res.sent || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + ' | Failed: ' + esc(String(Number(res.failed || 0))) + '</div>');
-        if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
-        if (Array.isArray(res.sentApplicantIdsSample) && res.sentApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Sent Sample: ' + esc(res.sentApplicantIdsSample.join(", ")) + '</div>');
-      }
-      if (res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(String(res.debugId || "")) + '</div>');
-      box.classList.remove("hidden");
-      box.classList.toggle("err", !!(res && res.ok === false));
-      box.innerHTML = parts.join("");
-    }
-    function renderBatchPanel(){
-      var selectedStage = batchState.selectedStage;
-      var priority = batchState.priority;
-      var messageType = batchState.messageType || "";
-      var sendable = batchState.sendable === true;
-      var limit = getStageBatchLimitUi_();
-      var offset = getStageBatchOffsetUi_();
-      var stageEl = document.getElementById("stageBatchSelectedStage");
-      var priorityEl = document.getElementById("stageBatchPriority");
-      var msgTypeEl = document.getElementById("stageBatchMessageType");
-      var sendableEl = document.getElementById("stageBatchSendable");
-      var disabledReasonEl = document.getElementById("stageBatchDisabledReason");
-      var previewBtn = document.getElementById("btnStageBatchPreview");
-      var sendBtn = document.getElementById("btnStageBatchSend");
-      var noteEl = document.getElementById("stageBatchInlineNote");
-      if (stageEl) stageEl.textContent = selectedStage || "-";
-      if (priorityEl) priorityEl.innerHTML = selectedStage ? renderPriorityBadge_(priority || mapStagePriorityUi_(selectedStage)) : "&mdash;";
-      if (msgTypeEl) msgTypeEl.textContent = messageType || "-";
-      if (sendableEl) sendableEl.textContent = selectedStage ? (sendable ? "YES" : "NO") : "-";
-      var disabledReason = "";
-      if (!selectedStage) disabledReason = "Select a stage card to preview or send a cohort.";
-      else if (!IS_SUPER) disabledReason = "SUPER admin required for stage batch actions.";
-      else if (!sendable) disabledReason = batchState.disabledReason || "No batch message is supported for this stage.";
-      batchState.disabledReason = disabledReason;
-      if (disabledReasonEl) disabledReasonEl.textContent = disabledReason || "-";
-      var previewReady = batchState.previewReady === true
-        && batchState.selectedStage === batchState.previewStage
-        && Number(batchState.previewLimit || 0) === limit
-        && Number(batchState.previewOffset || 0) === offset
-        && sendable;
-      if (previewBtn) {
-        previewBtn.disabled = !selectedStage || batchState.busy || !IS_SUPER;
-        previewBtn.textContent = batchState.busy && batchState.action === "preview" ? "Previewing..." : "Preview Cohort";
-      }
-      if (sendBtn) {
-        sendBtn.disabled = !previewReady || batchState.busy || !IS_SUPER;
-        sendBtn.textContent = batchState.busy && batchState.action === "send" ? "Sending..." : "Send Stage Batch";
-      }
-      if (noteEl) {
-        if (batchState.busy && batchState.action === "preview") noteEl.textContent = "Loading cohort preview...";
-        else if (batchState.busy && batchState.action === "send") noteEl.textContent = "Sending stage cohort...";
-        else if (disabledReason) noteEl.textContent = disabledReason;
-        else if (previewReady) noteEl.textContent = "Preview ready for send.";
-        else noteEl.textContent = "Preview is required before send.";
-      }
-      renderStageBatchSummary_(batchState.result);
-    }
-    function onStageBatchParamsChange_(){
-      getStageBatchLimitUi_();
-      getStageBatchOffsetUi_();
+    })
+    .withFailureHandler(function(err){
+      batchState.busy = false;
       resetBatchPreviewState_(false);
-      renderBatchPanel();
-    }
-    function bindStageBatchControls_(){
-      ["stageBatchLimit", "stageBatchOffset"].forEach(function(id){
-        var input = document.getElementById(id);
-        if (input && input.dataset.bound !== "1") {
-          input.dataset.bound = "1";
-          input.addEventListener("change", onStageBatchParamsChange_);
-          input.addEventListener("input", onStageBatchParamsChange_);
-        }
-      });
-      renderBatchPanel();
-    }
-    function previewStageBatchUi_(){
-      var stage = batchState.selectedStage;
-      var limit = getStageBatchLimitUi_();
-      var offset = getStageBatchOffsetUi_();
-      if (!stage || batchState.busy || !IS_SUPER) return;
-      resetBatchPreviewState_(false);
-      batchState.busy = true;
       batchState.action = "preview";
+      batchState.result = { ok: false, message: String((err && err.message) || err || "Server failure"), debugId: "" };
       renderBatchPanel();
-      google.script.run
-        .withSuccessHandler(function(res){
-          batchState.busy = false;
-          batchState.result = res && typeof res === "object" ? res : { ok: false, message: "Invalid preview response.", debugId: "" };
-          if (batchState.result && batchState.result.ok === true && String(batchState.result.stage || "").toUpperCase() === stage && Number(batchState.result.previewLimit || 0) === limit && Number(batchState.result.offset || 0) === offset) {
-            batchState.previewReady = true;
-            batchState.previewStage = stage;
-            batchState.previewLimit = limit;
-            batchState.previewOffset = offset;
-            batchState.previewEligible = Number(batchState.result.eligible || 0);
-          } else {
-            resetBatchPreviewState_(true);
-          }
-          renderBatchPanel();
-        })
-        .withFailureHandler(function(err){
-          batchState.busy = false;
-          resetBatchPreviewState_(false);
-          batchState.action = "preview";
-          batchState.result = { ok: false, message: String((err && err.message) || err || "Server failure"), debugId: "" };
-          renderBatchPanel();
-        })
-        .admin_previewStageBatch({ stage: stage, limit: limit, offset: offset });
-    }
-    function sendStageBatchUi_(){
-      var stage = batchState.selectedStage;
-      var limit = getStageBatchLimitUi_();
-      var offset = getStageBatchOffsetUi_();
-      var messageType = batchState.messageType || "";
-      var previewReady = batchState.previewReady === true
-        && batchState.selectedStage === batchState.previewStage
-        && Number(batchState.previewLimit || 0) === limit
-        && Number(batchState.previewOffset || 0) === offset
-        && batchState.sendable === true;
-      if (!previewReady || batchState.busy || !IS_SUPER) return;
-      var confirmText = "Send " + String(limit) + " emails for stage " + stage + " starting from offset " + String(offset) + "? Eligible: " + String(Number(batchState.previewEligible || 0)) + ". Message: " + messageType + ".";
-      if (!window.confirm(confirmText)) return;
-      batchState.busy = true;
+    })
+    .admin_previewStageBatch({ stage: stage, limit: limit, offset: offset });
+}
+function sendStageBatchUi_(){
+  var stage = batchState.selectedStage;
+  var limit = getStageBatchLimitUi_();
+  var offset = getStageBatchOffsetUi_();
+  var messageType = batchState.messageType || "";
+  var previewReady = batchState.previewReady === true
+    && batchState.selectedStage === batchState.previewStage
+    && Number(batchState.previewLimit || 0) === limit
+    && batchState.sendable === true;
+  if (!previewReady || batchState.busy || !IS_SUPER) return;
+  var confirmText = "Send " + String(limit) + " emails for stage " + stage + " using the next eligible unsent records? Preview prepared: " + String(Number(batchState.previewEligible || 0)) + ". Message: " + messageType + ". Diagnostic offset is ignored.";
+  if (!window.confirm(confirmText)) return;
+  batchState.busy = true;
+  batchState.action = "send";
+  renderBatchPanel();
+  google.script.run
+    .withSuccessHandler(function(res){
+      batchState.busy = false;
+      batchState.result = res && typeof res === "object" ? res : { ok: false, message: "Invalid send response.", debugId: "" };
+      resetBatchPreviewState_(true);
+      renderBatchPanel();
+      if (batchState.result && batchState.result.ok === true) {
+        loadStageDashboard({ force: 1 });
+        loadReviewQueues({ force: 1 });
+        if (selectedStageFilter) search();
+      }
+    })
+    .withFailureHandler(function(err){
+      batchState.busy = false;
+      resetBatchPreviewState_(false);
       batchState.action = "send";
+      batchState.result = { ok: false, message: String((err && err.message) || err || "Server failure"), debugId: "" };
       renderBatchPanel();
-      google.script.run
-        .withSuccessHandler(function(res){
-          batchState.busy = false;
-          batchState.result = res && typeof res === "object" ? res : { ok: false, message: "Invalid send response.", debugId: "" };
-          resetBatchPreviewState_(true);
-          renderBatchPanel();
-          if (batchState.result && batchState.result.ok === true) {
-            loadStageDashboard({ force: 1 });
-            loadReviewQueues({ force: 1 });
-            if (selectedStageFilter) search();
-          }
-        })
-        .withFailureHandler(function(err){
-          batchState.busy = false;
-          resetBatchPreviewState_(false);
-          batchState.action = "send";
-          batchState.result = { ok: false, message: String((err && err.message) || err || "Server failure"), debugId: "" };
-          renderBatchPanel();
-        })
-        .admin_sendStageBatch({ stage: stage, limit: limit, offset: offset, confirmSend: true });
-    }
-    function renderStageDashboard_(items, emptyMessage){
+    })
+    .admin_sendStageBatch({ stage: stage, limit: limit, offset: offset, confirmSend: true });
+}
+function renderStageDashboard_(items, emptyMessage){
       stageDashboardState = Array.isArray(items) ? items.slice() : [];
       var box = document.getElementById("stageDashboardCards");
       if (!box) return;
